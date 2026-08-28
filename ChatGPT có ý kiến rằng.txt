@@ -1,0 +1,32 @@
+ChatGPT có ý kiến rằng:
+Downbeat của osu không đồng nhất với onset vật lý mạnh nhất.
+Có một quy luật rất lạ:
+Khi offset tiến gần GT:
+334 → 454 → 467 → 482
+thì peak_time liên tục dịch trái:
+193 → 129 → 116 → 110
+Evaluation Flaw
+Mọi người đang đo:
+năng lượng tại t=0
+trong khi waveform template lại cho thấy:
+năng lượng thật xuất hiện sau t=0 khoảng 100~200ms.
+Nói cách khác:
+beat marker hiện tại không nằm trên transient.
+Nó nằm trước transient.
+
+Claude từng hỏi:
+Liệu cửa sổ [0,+20ms] đang bắt tail của beat trước thay vì onset của beat hiện tại?
+Sau khi xem anatomy:
+tôi nghĩ khả năng này rất cao.
+Vì:
+454ms vẫn có peak ở +129ms.
+Không phải ở 0ms.
+
+ChatGPT đề xuất: Peak Timing Distribution. Hiện tại template chỉ là mean. Mean có thể che mất toàn bộ hiện tượng.
+Tôi không nghĩ osu đang nhìn amplitude. Nó đang nhìn phase coherence.
+
+kiểm tra giả thuyết: GT tương ứng với vị trí có phase-coherence cao nhất giữa các beat
+
+đề xuất compare_templates.py mở rộng để log phân phối peak timing của từng beat trước khi averaging.
+___
+
