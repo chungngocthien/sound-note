@@ -179,3 +179,71 @@ Four surveyors are measuring the same peak from four different instruments — a
 ---
 
 [2026-06-29] The session ended with every implemented metric falsified on top.mp3 and GT corrected to 465ms, carrying the unoperationalized question — *what event type does osu define as a downbeat* — as the primary inheritance into the next session.
+___
+Dưới đây là bản narrative theo đúng `NARRATIVE_RENDER_MODE (v3)`, giữ trọng tâm vào một thesis duy nhất: **the session was a process of replacing plausible stories about the executable with evidence that could survive hostile verification.**
+
+[1] WHO
+
+The orchestrator thinks by building a map before trusting any path through it. Faced with an opaque executable, they do not optimize first for speed, elegance, or even immediate implementation. They optimize for the collapse of uncertainty. Their recurring bias is to distrust explanations that arrive too early, especially explanations that merely sound mathematically plausible. They repeatedly separate what the binary demonstrably does from what they think it ought to be doing, then use multiple independent models to attack the boundary between the two. When an implementation detail remains unclear, they treat that uncertainty as an object to be named rather than something to be quietly assumed away. This makes the process slower and produces unusually large specifications, but it also means that every new contradiction has somewhere to land.
+
+[2] WHAT HAPPENED
+
+The session began with an apparently manageable problem: reconstruct the BPM and offset algorithm inside Timing Analyzer v0.32.4 alpha well enough that another model could implement it without relying on guesses. The first design was comparatively small because the broad architecture seemed understandable. Audio entered through BASS at 44.1 kHz, was reduced to mono, passed through preprocessing, resampling, spectral analysis, peak detection, periodic tracking, and phase analysis. At that level, the executable looked like a compact DSP pipeline, and the specification could remain compact too.
+
+That compression stopped working once implementation details were forced into contact with the binary. The preprocessing stage was initially easy to describe as a large filter bank, but the actual call structure showed that the 16 IIR sections were divided into five different coefficient groups rather than being run as one 16-section cascade five times. Each pass squared its result, applied a fixed section at `0x419530`, accumulated the filtered signal multiplicatively through `(1 + filtered)`, and only then passed the result through the custom logarithm. What had looked like a generic filter pipeline became a specific sequence whose order could no longer be treated as interchangeable.
+
+The resampler created another forced correction. The output was not produced by interpolation. Its length followed a ceiling operation, and each output sample selected approximately `floor(n*Fs_src/Fs_dst + 0.5)` from the source, producing nearest-sample resampling at roughly 1000 Hz. This mattered because an implementation that merely reproduced the conceptual intent of “downsample to 1 kHz” would still produce a different signal.
+
+The FFT stage then broke another convenient simplification. The transform size was not simply the input length, nor was it the half-length suggested by an earlier reading. The function formed `N + floor(N/2)`, rounded that upward to the next power of two, zero-initialized the complex tail, performed a custom radix-2 FFT, converted the result to magnitude squared, and ran the inverse transform to obtain the correlation. The returned correlation vector contained only `floor(N/2)` lags. A concrete example changed the interpretation completely: an input of 240,000 samples led to 120,000 returned lags but a 524,288-point FFT, not a 262,144-point transform. The peak detector therefore operated on a much smaller logical result than the internal FFT allocation suggested.
+
+The BPM tracker became even more specific. Every local maximum was considered as a seed in ascending order until a peak exceeded index 999, at which point seed discovery stopped. Each accepted seed initialized a periodic tracker whose next peak was predicted from the refined period and searched in a narrow integer-index window. The first peak inside that window was accepted. A missed beat terminated the track. Candidate strength was measured against the seed and against the current best candidate, with the observed thresholds of `0.7` and `1.2`. The fit metric, its sample-count guard, and the `2.4` and `3e-5` rejection boundaries further constrained what counted as a stable periodic signal.
+
+The harmonic correction stage initially looked like an ordinary conceptual “harmonic check,” but assembly evidence turned it into a concrete operation. The function at `0x0041438A` was tied to the binary's `fmod` descriptor, and the call sequence placed `candidate_period + 10.0` against the current best period. The remainder therefore came from the candidate period shifted by 10 ms modulo the best period, with the subsequent comparison implementing the observed harmonic tolerance. The code no longer supported a vague description such as “prefer a harmonic candidate when appropriate.” It contained a measurable rule.
+
+The phase pipeline forced a similar distinction between coordinate systems. The phase buffer was allocated with `period + 40`, but accumulation began at bin zero. The later search began around index 35, which was therefore a search boundary rather than an accumulation offset. Parabolic refinement produced a phase peak from which `6.2` was subtracted, and the main path then subtracted another `22.5`, leaving the printed coordinate as `phase_peak_refined - 28.7`. The apparently suspicious number 35 could not safely be folded into that equation merely because nearby numbers looked related.
+
+Meanwhile, the post-resampling branch resisted a simpler mental model. A reverse-copy primitive copied the source backward into another vector, a one-section IIR was applied to both branches using the coefficients at `0x419544`, and the final forward buffer was generated by an alternating recurrence involving the reverse branch and the previously written forward value. The branch was therefore neither a simple reversed signal nor an ordinary forward-reverse filter pass. The executable was repeatedly defeating descriptions that were correct at the level of DSP vocabulary but wrong at the level of actual data flow.
+
+Across these discoveries, the design document expanded from a compact architectural sketch into a much larger recovered specification. The growth did not come from inventing new features. It came from each unresolved shortcut being exposed, tested, and replaced with a narrower claim supported by evidence. The process shifted from describing what the algorithm probably meant to recording what the executable demonstrably did.
+
+[3] WHERE IT BROKE
+
+The central stance collapsed when the investigation could no longer treat plausible DSP abstractions as sufficient specifications. The most important destruction was not “the code had a bug.” The bug-like mismatches were evidence that the old mental model was too coarse. The earlier belief was that a reasonably faithful conceptual reconstruction would be enough to guide implementation. The evidence showed otherwise.
+
+The FFT sizing discrepancy destroyed that belief cleanly. A seemingly reasonable transform-size interpretation produced 262,144 where the recovered allocation logic required 524,288 for the 240,000-sample example. That mismatch was not itself the belief. It was the measurement that proved the belief could not survive.
+
+The preprocessing call structure caused a second collapse. The assumption of repeated full-bank filtering was replaced by the five-pass section partition `[0,2,6,10,14,16]`, with a distinct coefficient group used on each pass. Again, the contradiction did not become part of the design as a “bug.” It became the evidence that forced a different model.
+
+The phase stage left a more uncomfortable void. The observed search start at 35 was real, but no traced operation justified converting it into a subtraction from the phase data. The replacement rule was therefore not another elegant formula. It was restraint: accumulation still began at zero, and the public offset remained tied to the traced `6.2` and `22.5` adjustments. The meaning of 35 stayed unresolved instead of being promoted into invented semantics.
+
+By the end of the session, the stance that survived was narrower and harsher: the implementation must follow the binary's observed operations, even when the resulting specification looks stranger than the conceptual story.
+
+[4] WHAT REMAINS UNRESOLVED
+
+Several tensions remain active. The custom logarithm at `FUN_00413958` has been structurally recovered, including exponent and mantissa reduction, lookup-table use, polynomial approximation, subnormal scaling, and explicit handling of exceptional values, but the exact returned payloads for every special IEEE-754 case are not yet fully proven because register tracking around the decompiled return paths remains incomplete.
+
+The custom FFT is algorithmically understood as a radix-2 complex transform followed by magnitude squaring and a second transform, with zero-initialized complex tail and `1/NFFT`-style scaling visible in the surrounding code. What remains uncertain is the exact runtime parameter convention controlling transform direction at the call sites. The algorithmic sequence is known, but one low-level calling detail still resists a clean semantic label.
+
+The phase search boundary at index 35 remains another live tension. It is unquestionably a search lower bound, not a write offset, yet the traced main path gives no sufficient evidence for why that number was chosen. Its numerical proximity to other constants is suggestive but not explanatory. The executable contains the number, but the current evidence does not contain its author's rationale.
+
+The timeline validator also remains only partially interpreted. Its flags are mapped to `#`, `+`, `-`, and `.`, and the validation operates on local timing windows around predicted positions, but the exact mathematical direction represented by `+` versus `-` is not fully established. The validator runs after BPM and offset selection and does not feed back into the winner, so its role is visible while some of its local semantics remain unresolved.
+
+Finally, the reverse-copy branch is structurally clear, but the exact alias relationship of the source range passed into that primitive is not completely proven at the level of pointer identity. The recurrence itself is recovered. One layer of data-flow labeling around its input remains less certain than the arithmetic.
+
+These are no longer broad unknowns about the algorithm. They are narrow tensions at the edges of a largely reconstructed pipeline.
+
+[5] WHAT WAS LEARNED — AND AT WHAT COST
+
+The strongest lesson that survived repeated cross-checking was that binary reverse engineering becomes tractable when the task is split into evidence, hypothesis, and implementation contract instead of allowing those three things to blur together. The cold models became useful not because they magically knew the executable, but because their implementation attempts exposed places where the recovered specification still contained ambiguity. The document grew because ambiguity was being surfaced rather than hidden.
+
+A second lesson was that mathematical familiarity is not enough. The pipeline is built from recognizable signal-processing machinery: recursive IIR sections, nonlinear energy accumulation, logarithmic compression, resampling, FFT-based autocorrelation, local-extrema detection, periodic tracking, regression, harmonic comparison, and phase folding. None of those pieces needed to be mysterious. The difficulty came from their exact arrangement, constants, state resets, indexing, branching, and coordinate conventions. Knowing the textbook method explained the vocabulary. Reading the binary recovered the actual sentence.
+
+A third lesson changed the meaning of implementation itself. The goal was no longer merely to “recreate an algorithm.” It became to establish a behavioral contract precise enough that an implementation produced by another model could be challenged against the executable one operation at a time. That shifted the specification from explanatory prose toward recovered behavior.
+
+The cost was substantial. The design expanded from roughly 2,000 lines to roughly 9,000 lines because every shortcut that could conceal an assumption had to be opened. Time was spent proving details that a conventional programmer might have silently approximated. Multiple models were made to disagree with one another before convergence was accepted. The apparent simplicity of the original executable was therefore purchased by a large amount of external reconstruction work. The program had compressed its complexity into machine code; the investigation had to decompress it back into human language.
+
+[6] METAPHOR ANCHOR
+
+The session was a forensic map drawn over a collapsed bridge. At the beginning, the map showed a plausible road from raw audio to BPM and offset. Each time the binary contradicted a shortcut, one section of that road disappeared: the full 16-section cascade vanished, the naïve FFT size vanished, interpolation vanished, the simple reverse-filter story vanished, and the idea that conceptual DSP equivalence was sufficient vanished with them. The surviving map is narrower, uglier, and covered in measured coordinates, but it now marks which parts are solid ground and which parts still end at a gap. The central conflict is therefore not between two implementations. It is between a story that merely fits the shape of the executable and a specification that has earned the right to claim fidelity.
+
+[2026-10-04] The session ended with the executable reduced to a mostly closed behavioral pipeline, carrying a small set of unresolved low-level semantics and unexplained constants into the next.
